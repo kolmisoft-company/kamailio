@@ -148,6 +148,16 @@ static const char *command_strings[] = {
 		[OP_PLAY_DTMF] = "play DTMF",
 };
 
+struct codec_stats {
+	int got_tag;
+
+	str tag_param;
+	str codec_param;
+
+	pv_elem_t *tag_pv;
+	pv_elem_t *codec_pv;
+};
+
 struct minmax_mos_stats
 {
 	str mos_param;
@@ -265,7 +275,8 @@ static int set_rtp_inst_pvar(struct sip_msg *msg, const str *const uri);
 static int pv_parse_var(str *inp, pv_elem_t **outp, int *got_any);
 static int mos_label_stats_parse(struct minmax_mos_label_stats *mmls);
 static void parse_call_stats(bencode_item_t *, struct sip_msg *);
-static void parse_codecs(bencode_item_t *, struct sip_msg *);
+static int codec_stats_parse(struct codec_stats *codec);
+static void parse_codecs(struct codec_stats *codec, bencode_item_t *, struct sip_msg *);
 
 static int control_cmd_tos = -1;
 static int rtpengine_allow_op = 0;
@@ -309,18 +320,6 @@ static pv_spec_t *write_sdp_pvar = NULL;
 static str read_sdp_pvar_str = {NULL, 0};
 static pv_spec_t *read_sdp_pvar = NULL;
 
-static str src_codec_tag_param = {NULL, 0};
-static pv_elem_t *src_codec_tag_pv = NULL;
-
-static str src_codec_str = {NULL, 0};
-static pv_elem_t *src_codec_pv = NULL;
-
-static str dst_codec_tag_param = {NULL, 0};
-static pv_elem_t *dst_codec_tag_pv = NULL;
-
-static str dst_codec_str = {NULL, 0};
-static pv_elem_t *dst_codec_pv = NULL;
-
 static str media_duration_pvar_str = {NULL, 0};
 static pv_spec_t *media_duration_pvar = NULL;
 
@@ -351,8 +350,12 @@ static struct tm_binds tmb;
 static pv_elem_t *extra_id_pv = NULL;
 
 
+static struct codec_stats side_A_codec_stats, side_B_codec_stats;
+
 static struct minmax_mos_label_stats global_mos_stats, side_A_mos_stats,
 		side_B_mos_stats;
+
+
 int got_any_mos_pvs;
 struct crypto_binds rtpengine_cb;
 
@@ -503,10 +506,10 @@ static param_export_t params[] = {
 				&global_mos_stats.average.samples_param},
 
 		/* codecs */
-		{"legA_codec_tag", PARAM_STR, &src_codec_tag_param},
-		{"legA_codec", PARAM_STR, &src_codec_str},
-		{"legB_codec_tag", PARAM_STR, &dst_codec_tag_param},
-		{"legB_codec", PARAM_STR, &dst_codec_str},
+		{"legA_codec_tag", PARAM_STR, &side_A_codec_stats.tag_param },
+		{"legA_codec", PARAM_STR, &side_A_codec_stats.codec_param },
+		{"legB_codec_tag", PARAM_STR, &side_B_codec_stats.tag_param },
+		{"legB_codec", PARAM_STR, &side_B_codec_stats.codec_param },
 
 		/* designated side A */
 		{"mos_A_label_pv", PARAM_STR, &side_A_mos_stats.label_param},
@@ -1781,6 +1784,10 @@ static int mod_init(void)
 		return -1;
 	if(mos_label_stats_parse(&side_B_mos_stats))
 		return -1;
+	if (codec_stats_parse(&side_A_codec_stats))
+		return -1;
+	if (codec_stats_parse(&side_B_codec_stats))
+		return -1;
 
 	if(setid_avp_param) {
 		s.s = setid_avp_param;
@@ -2134,6 +2141,16 @@ static int mos_label_stats_parse(struct minmax_mos_label_stats *mmls)
 
 	if(mmls->got_any_pvs)
 		got_any_mos_pvs = 1;
+
+	return 0;
+}
+
+static int codec_stats_parse(struct codec_stats *codec) {
+	if (pv_parse_var(&codec->tag_param, &codec->tag_pv, &codec->got_tag))
+		return -1;
+
+	if (pv_parse_var(&codec->codec_param, &codec->codec_pv, &codec->got_tag))
+		return -1;
 
 	return 0;
 }
@@ -3809,92 +3826,55 @@ ssrcs_done:
 	avp_print_mos(&mmls->average, &average_vals, created, msg);
 }
 
-static void parse_codecs(bencode_item_t *dict, struct sip_msg *msg)
+static void parse_codecs(struct codec_stats *codec, bencode_item_t *dict, struct sip_msg *msg)
 {
-	str src_codec, dst_codec;
-	str src_codec_tag_str;
-	str dst_codec_tag_str;
-	char src_codec_tag[200] = "";
-	char dst_codec_tag[200] = "";
-	bencode_item_t *tags, *media, *src_tag, *dst_tag;
+	str codec_str;
+	str tag_str;
+	char tag_string[256] = "";
+	bencode_item_t *tags, *tag, *media;
 
 	LM_DBG("rtpengine codec: parsing codecs\n");
 
-	memset(&src_codec_tag_str, 0, sizeof(str));
-	memset(&dst_codec_tag_str, 0, sizeof(str));
-
-	if (!pv_parse_var(&src_codec_tag_param, &src_codec_tag_pv, NULL)) {
-		if (!pv_printf_s(msg, src_codec_tag_pv, &src_codec_tag_str)) {
-			strncpy(src_codec_tag, src_codec_tag_str.s, src_codec_tag_str.len);
-		}
-	}
-
-	if (!pv_parse_var(&dst_codec_tag_param, &dst_codec_tag_pv, NULL)) {
-		if (!pv_printf_s(msg, dst_codec_tag_pv, &dst_codec_tag_str)) {
-			strncpy(dst_codec_tag, dst_codec_tag_str.s, dst_codec_tag_str.len);
-		}
-	}
-
-	// Only parse codecs if requested on legA or legB
-	if (!src_codec_tag_str.len && !dst_codec_tag_str.len)
+	if (!codec->got_tag)
 		return;
 
-	LM_DBG("rtpengine codec: src codec tag [%s]\n", src_codec_tag);
-	LM_DBG("rtpengine codec: dst codec tag [%s]\n", dst_codec_tag);
+	if (!codec->tag_pv)
+		return;
+
+	if (pv_printf_s(msg, codec->tag_pv, &tag_str)) {
+		LM_ERR("error printing codec tag PV\n");
+		return;
+	}
+
+	LM_DBG("rtpengine codec: searching codec stats for tag [%.*s]\n", tag_str.len, tag_str.s);
 
 	tags = bencode_dictionary_get_expect(dict, "tags", BENCODE_DICTIONARY);
 
 	if (!tags)
 		return; /* no tags found - return nothing */
 
-	if (strlen(src_codec_tag)) {
-		LM_DBG("rtpengine codec: checking for src tag %s\n", src_codec_tag);
-		src_tag = bencode_dictionary_get_expect(tags, src_codec_tag, BENCODE_DICTIONARY);
+	strncpy(tag_string, tag_str.s, tag_str.len);
 
-		if (src_tag) {
-			LM_DBG("rtpengine codec: src tag found\n");
-			media = bencode_dictionary_get_expect(src_tag, "medias", BENCODE_LIST);
+	LM_DBG("rtpengine codec: checking for tag %s\n", tag_string);
+	tag = bencode_dictionary_get_expect(tags, tag_string, BENCODE_DICTIONARY);
 
-			if (media && media->child) {
-				LM_DBG("rtpengine codec: src media found\n");
-				if (bencode_dictionary_get_str(media->child, "codec", &src_codec)) {
-					LM_DBG("rtpengine codec: src codec %.*s\n", src_codec.len, src_codec.s);
-					pv_parse_var(&src_codec_str, &src_codec_pv, NULL);
-					avp_print_s(src_codec_pv, src_codec.s, src_codec.len, msg);
-				} else {
-					LM_DBG("rtpengine codec: codec not found\n");
-				}
+	if (tag) {
+		LM_DBG("rtpengine codec: tag found\n");
+		media = bencode_dictionary_get_expect(tag, "medias", BENCODE_LIST);
+
+		if (media && media->child) {
+			LM_DBG("rtpengine codec: media found\n");
+			if (bencode_dictionary_get_str(media->child, "codec", &codec_str)) {
+				LM_DBG("rtpengine codec: codec %.*s\n", codec_str.len, codec_str.s);
+				avp_print_s(codec->codec_pv, codec_str.s, codec_str.len, msg);
 			} else {
-				LM_DBG("rtpengine codec: media not found\n");
+				LM_DBG("rtpengine codec: codec not found\n");
 			}
 		} else {
-			LM_DBG("rtpengine codec: src tag not found\n");
+			LM_DBG("rtpengine codec: media not found\n");
 		}
-	}
-
-	if (strlen(dst_codec_tag)) {
-		LM_DBG("rtpengine codec: checking for dst tag %s\n", dst_codec_tag);
-		dst_tag = bencode_dictionary_get_expect(tags, dst_codec_tag, BENCODE_DICTIONARY);
-
-		if (dst_tag) {
-			LM_DBG("rtpengine codec: dst tag found\n");
-			media = bencode_dictionary_get_expect(dst_tag, "medias", BENCODE_LIST);
-
-			if (media && media->child) {
-				LM_DBG("rtpengine codec: dst media found\n");
-				if (bencode_dictionary_get_str(media->child, "codec", &dst_codec)) {
-					LM_DBG("rtpengine codec: dst codec %.*s\n", dst_codec.len, dst_codec.s);
-					pv_parse_var(&dst_codec_str, &dst_codec_pv, NULL);
-					avp_print_s(dst_codec_pv, dst_codec.s, dst_codec.len, msg);
-				} else {
-					LM_DBG("rtpengine codec: codec not found\n");
-				}
-			} else {
-				LM_DBG("rtpengine codec: media not found\n");
-			}
-		} else {
-			LM_DBG("rtpengine codec: dst tag not found\n");
-		}
+	} else {
+		LM_DBG("rtpengine codec: tag not found\n");
 	}
 }
 
@@ -3916,7 +3896,8 @@ static int rtpengine_delete(struct sip_msg *msg, const char *flags)
 	if(!ret)
 		return -1;
 	parse_call_stats(ret, msg);
-	parse_codecs(ret, msg);
+	parse_codecs(&side_A_codec_stats, ret, msg);
+	parse_codecs(&side_B_codec_stats, ret, msg);
 	bencode_buffer_free(&bencbuf);
 	return 1;
 }
