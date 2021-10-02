@@ -148,13 +148,16 @@ static const char *command_strings[] = {
 		[OP_PLAY_DTMF] = "play DTMF",
 };
 
-struct codec_stats {
-	int got_tag;
+struct call_stats {
+	int got_tag_pv;
+	int got_stats_pv;
 
 	str tag_param;
+	str media_ip_param;
 	str codec_param;
 
 	pv_elem_t *tag_pv;
+	pv_elem_t *media_ip_pv;
 	pv_elem_t *codec_pv;
 };
 
@@ -275,8 +278,9 @@ static int set_rtp_inst_pvar(struct sip_msg *msg, const str *const uri);
 static int pv_parse_var(str *inp, pv_elem_t **outp, int *got_any);
 static int mos_label_stats_parse(struct minmax_mos_label_stats *mmls);
 static void parse_call_stats(bencode_item_t *, struct sip_msg *);
-static int codec_stats_parse(struct codec_stats *codec);
-static void parse_codecs(struct codec_stats *codec, bencode_item_t *, struct sip_msg *);
+static int call_stats_parse(struct call_stats *stats);
+static void parse_leg_call_stats(struct call_stats *codec, bencode_item_t *,
+		struct sip_msg *);
 
 static int control_cmd_tos = -1;
 static int rtpengine_allow_op = 0;
@@ -349,12 +353,12 @@ static struct tm_binds tmb;
 
 static pv_elem_t *extra_id_pv = NULL;
 
-
-static struct codec_stats side_A_codec_stats, side_B_codec_stats;
-
 static struct minmax_mos_label_stats global_mos_stats, side_A_mos_stats,
 		side_B_mos_stats;
 
+/* call stats */
+static struct call_stats legA_call_stats;
+static struct call_stats legB_call_stats;
 
 int got_any_mos_pvs;
 struct crypto_binds rtpengine_cb;
@@ -505,11 +509,15 @@ static param_export_t params[] = {
 		{"mos_average_samples_pv", PARAM_STR,
 				&global_mos_stats.average.samples_param},
 
-		/* codecs */
-		{"legA_codec_tag", PARAM_STR, &side_A_codec_stats.tag_param },
-		{"legA_codec", PARAM_STR, &side_A_codec_stats.codec_param },
-		{"legB_codec_tag", PARAM_STR, &side_B_codec_stats.tag_param },
-		{"legB_codec", PARAM_STR, &side_B_codec_stats.codec_param },
+		/* call stats for legA */
+		{"legA_tag", PARAM_STR, &legA_call_stats.tag_param},
+		{"legA_media_ip", PARAM_STR, &legA_call_stats.media_ip_param},
+		{"legA_codec", PARAM_STR, &legA_call_stats.codec_param},
+
+		/* call stats for legB */
+		{"legB_tag", PARAM_STR, &legB_call_stats.tag_param},
+		{"legB_media_ip", PARAM_STR, &legB_call_stats.media_ip_param},
+		{"legB_codec", PARAM_STR, &legB_call_stats.codec_param},
 
 		/* designated side A */
 		{"mos_A_label_pv", PARAM_STR, &side_A_mos_stats.label_param},
@@ -1784,9 +1792,9 @@ static int mod_init(void)
 		return -1;
 	if(mos_label_stats_parse(&side_B_mos_stats))
 		return -1;
-	if (codec_stats_parse(&side_A_codec_stats))
+	if (call_stats_parse(&legA_call_stats))
 		return -1;
-	if (codec_stats_parse(&side_B_codec_stats))
+	if (call_stats_parse(&legB_call_stats))
 		return -1;
 
 	if(setid_avp_param) {
@@ -2145,11 +2153,15 @@ static int mos_label_stats_parse(struct minmax_mos_label_stats *mmls)
 	return 0;
 }
 
-static int codec_stats_parse(struct codec_stats *codec) {
-	if (pv_parse_var(&codec->tag_param, &codec->tag_pv, &codec->got_tag))
+static int call_stats_parse(struct call_stats *stats) {
+	if (pv_parse_var(&stats->tag_param, &stats->tag_pv,
+			&stats->got_tag_pv))
 		return -1;
-
-	if (pv_parse_var(&codec->codec_param, &codec->codec_pv, &codec->got_tag))
+	if (pv_parse_var(&stats->media_ip_param, &stats->media_ip_pv,
+			&stats->got_stats_pv))
+		return -1;
+	if (pv_parse_var(&stats->codec_param, &stats->codec_pv,
+			&stats->got_stats_pv))
 		return -1;
 
 	return 0;
@@ -3687,6 +3699,16 @@ static int decode_mos_vals_dict(
 	return 1;
 }
 
+static void avp_print_call_stats(pv_elem_t *elem, bencode_item_t *dict,
+		char *key, struct sip_msg *msg)
+{
+	str buffer_str;
+
+	if (bencode_dictionary_get_str(dict, key, &buffer_str)) {
+		avp_print_s(elem, buffer_str.s, buffer_str.len, msg);
+	}
+}
+
 static void parse_call_stats_1(struct minmax_mos_label_stats *mmls,
 		bencode_item_t *dict, struct sip_msg *msg)
 {
@@ -3826,27 +3848,34 @@ ssrcs_done:
 	avp_print_mos(&mmls->average, &average_vals, created, msg);
 }
 
-static void parse_codecs(struct codec_stats *codec, bencode_item_t *dict, struct sip_msg *msg)
+static void parse_leg_call_stats(struct call_stats *stats, bencode_item_t *dict,
+	struct sip_msg *msg)
 {
-	str codec_str;
 	str tag_str;
 	char tag_string[256] = "";
-	bencode_item_t *tags, *tag, *media;
+	bencode_item_t *tags, *tag, *medias, *streams, *endpoint;
 
-	LM_DBG("rtpengine codec: parsing codecs\n");
+	LM_DBG("rtpengine call stats: parsing stats\n");
 
-	if (!codec->got_tag)
-		return;
-
-	if (!codec->tag_pv)
-		return;
-
-	if (pv_printf_s(msg, codec->tag_pv, &tag_str)) {
-		LM_ERR("error printing codec tag PV\n");
+	/* check only if info is requested on this call side */
+	if (!stats->got_tag_pv || !stats->tag_pv) {
+		LM_DBG("rtpengine call stats: tag not found\n");
 		return;
 	}
 
-	LM_DBG("rtpengine codec: searching codec stats for tag [%.*s]\n", tag_str.len, tag_str.s);
+	/* check only if at least one param is requested */
+	if (!stats->got_stats_pv) {
+		LM_DBG("rtpengine call stats: nothing to parse\n");
+		return;
+	}
+
+	if (pv_printf_s(msg, stats->tag_pv, &tag_str)) {
+		LM_DBG("error printing call stats tag PV\n");
+		return;
+	}
+
+	LM_DBG("rtpengine call stats: searching for tag: %.*s\n",
+		tag_str.len, tag_str.s);
 
 	tags = bencode_dictionary_get_expect(dict, "tags", BENCODE_DICTIONARY);
 
@@ -3855,26 +3884,39 @@ static void parse_codecs(struct codec_stats *codec, bencode_item_t *dict, struct
 
 	strncpy(tag_string, tag_str.s, tag_str.len);
 
-	LM_DBG("rtpengine codec: checking for tag %s\n", tag_string);
 	tag = bencode_dictionary_get_expect(tags, tag_string, BENCODE_DICTIONARY);
 
-	if (tag) {
-		LM_DBG("rtpengine codec: tag found\n");
-		media = bencode_dictionary_get_expect(tag, "medias", BENCODE_LIST);
+	if (!tag) {
+		LM_DBG("rtpengine call stats: tag not found\n");
+		return;
+	}
 
-		if (media && media->child) {
-			LM_DBG("rtpengine codec: media found\n");
-			if (bencode_dictionary_get_str(media->child, "codec", &codec_str)) {
-				LM_DBG("rtpengine codec: codec %.*s\n", codec_str.len, codec_str.s);
-				avp_print_s(codec->codec_pv, codec_str.s, codec_str.len, msg);
-			} else {
-				LM_DBG("rtpengine codec: codec not found\n");
-			}
-		} else {
-			LM_DBG("rtpengine codec: media not found\n");
-		}
-	} else {
-		LM_DBG("rtpengine codec: tag not found\n");
+	medias = bencode_dictionary_get_expect(tag, "medias", BENCODE_LIST);
+
+	if (!medias || !medias->child) {
+		LM_DBG("rtpengine call stats: media not found\n");
+		return;
+	}
+
+	// parse codec
+	if (stats->codec_pv)
+		avp_print_call_stats(stats->codec_pv, medias->child, "codec", msg);
+
+	streams = bencode_dictionary_get_expect(medias->child, "streams",
+		BENCODE_LIST);
+
+	if (!streams || !streams->child) {
+		LM_DBG("rtpengine call stats: streams not found\n");
+		return;
+	}
+
+	// parse media ip
+	if (stats->media_ip_pv) {
+		endpoint = bencode_dictionary_get_expect(streams->child, "endpoint",
+			BENCODE_DICTIONARY);
+
+		if (endpoint)
+			avp_print_call_stats(stats->media_ip_pv, endpoint, "address", msg);
 	}
 }
 
@@ -3896,8 +3938,8 @@ static int rtpengine_delete(struct sip_msg *msg, const char *flags)
 	if(!ret)
 		return -1;
 	parse_call_stats(ret, msg);
-	parse_codecs(&side_A_codec_stats, ret, msg);
-	parse_codecs(&side_B_codec_stats, ret, msg);
+	parse_leg_call_stats(&legA_call_stats, ret, msg);
+	parse_leg_call_stats(&legB_call_stats, ret, msg);
 	bencode_buffer_free(&bencbuf);
 	return 1;
 }
