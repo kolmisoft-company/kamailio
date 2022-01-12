@@ -47,6 +47,8 @@
 #include "acc_radius_mod.h"
 #include "../../modules/acc/acc_extra.h"
 
+const str m4_backup_radius_server_active_avp = {"m4_backup_radius_server_active", 30};
+
 MODULE_VERSION
 
 static int mod_init(void);
@@ -60,7 +62,7 @@ static int w_acc_radius_request(struct sip_msg *rq, char *comment, char *foo);
 static int acc_api_fixup(void **param, int param_no);
 static int free_acc_api_fixup(void **param, int param_no);
 
-int init_acc_rad(acc_extra_t *leg_info, char *rad_cfg, int srv_type);
+int init_acc_rad(void **rh, acc_extra_t *leg_info, char *rad_cfg, int srv_type);
 int extra2attrs(struct acc_extra *extra, struct attr *attrs, int offset);
 
 /*! ACC API structure */
@@ -71,17 +73,23 @@ acc_engine_t _acc_radius_engine;
 /*! \name AccRadiusVariables  Radius Variables */
 /*@{*/
 
+static int use_radius_backup_server = 0;
 static char *radius_config = 0;
+static char *radius_config_backup = 0;
 int radius_flag = -1;
 int radius_missed_flag = -1;
 static int service_type = -1;
 int rad_time_mode = 0;
-void *rh;
+void *rh = NULL;
+void *rh_main = NULL;
+void *rh_backup = NULL;
 /* rad extra variables */
 static char *rad_extra_str = 0;
 acc_extra_t *rad_extra = 0;
 /*@}*/
 
+/* backup server state */
+static int backup_server_active = 0;
 
 /* clang-format off */
 static cmd_export_t cmds[] = {
@@ -93,13 +101,15 @@ static cmd_export_t cmds[] = {
 
 
 static param_export_t params[] = {
-	{"radius_config",        PARAM_STRING, &radius_config     },
-	{"radius_flag",          INT_PARAM, &radius_flag          },
-	{"radius_missed_flag",   INT_PARAM, &radius_missed_flag   },
-	{"service_type",         INT_PARAM, &service_type         },
-	{"radius_extra",         PARAM_STRING, &rad_extra_str     },
-	{"rad_time_mode",          INT_PARAM, &rad_time_mode      },
-	{0,0,0}
+    {"radius_config",                PARAM_STRING, &radius_config          },
+    {"radius_backup_config",         PARAM_STRING, &radius_config_backup   },
+    {"radius_flag",                  INT_PARAM, &radius_flag               },
+    {"radius_missed_flag",           INT_PARAM, &radius_missed_flag        },
+    {"service_type",                 INT_PARAM, &service_type              },
+    {"radius_extra",                 PARAM_STRING, &rad_extra_str          },
+    {"rad_time_mode",                  INT_PARAM, &rad_time_mode           },
+    {"use_radius_backup_server",    INT_PARAM, &use_radius_backup_server   },
+    {0,0,0}
 };
 
 
@@ -238,7 +248,7 @@ static struct attr rd_attrs[RA_STATIC_MAX + ACC_CORE_LEN - 2 + MAX_ACC_EXTRA
 							+ MAX_ACC_LEG];
 static struct val rd_vals[RV_STATIC_MAX];
 
-int init_acc_rad(acc_extra_t *leg_info, char *rad_cfg, int srv_type)
+int init_acc_rad(void **rh_local, acc_extra_t *leg_info, char *rad_cfg, int srv_type)
 {
 	int n;
 
@@ -267,17 +277,17 @@ int init_acc_rad(acc_extra_t *leg_info, char *rad_cfg, int srv_type)
 	n += extra2attrs(leg_info, rd_attrs, n);
 
 	/* read config */
-	if((rh = rc_read_config(rad_cfg)) == NULL) {
+	if((*rh_local = rc_read_config(rad_cfg)) == NULL) {
 		LM_ERR("failed to open radius config file: %s\n", rad_cfg);
 		return -1;
 	}
 	/* read dictionary */
-	if(rc_read_dictionary(rh, rc_conf_str(rh, "dictionary")) != 0) {
+	if(rc_read_dictionary(*rh_local, rc_conf_str(*rh_local, "dictionary")) != 0) {
 		LM_ERR("failed to read radius dictionary\n");
 		return -1;
 	}
 
-	INIT_AV(rh, rd_attrs, n, rd_vals, RV_STATIC_MAX, "acc", -1, -1);
+	INIT_AV(*rh_local, rd_attrs, n, rd_vals, RV_STATIC_MAX, "acc", -1, -1);
 
 	if(srv_type != -1)
 		rd_vals[RV_SIP_SESSION].v = srv_type;
@@ -289,11 +299,24 @@ int init_acc_rad(acc_extra_t *leg_info, char *rad_cfg, int srv_type)
 int acc_radius_init(acc_init_info_t *inf)
 {
 	if(radius_config && radius_config[0]) {
-		if(init_acc_rad(inf->leg_info, radius_config, service_type) != 0) {
+		if(init_acc_rad(&rh_main, inf->leg_info, radius_config, service_type) != 0) {
 			LM_ERR("failed to init radius\n");
 			return -1;
 		}
 	}
+
+	if(use_radius_backup_server == 1 && radius_config_backup && radius_config_backup[0]) {
+		if(init_acc_rad(&rh_backup, inf->leg_info, radius_config_backup, service_type) != 0) {
+			LM_ERR("failed to init backup acct radius server\n");
+		} else {
+            LM_INFO("Backup acct radius server initialized!\n");
+			backup_server_active = 1;
+		}
+	} else {
+		backup_server_active = 1;
+		LM_INFO("Backup acct radius server is not set\n");
+	}
+
 	return 0;
 }
 
@@ -316,9 +339,9 @@ static inline uint32_t rad_status(struct sip_msg *req, int code)
 	return rd_vals[RV_STATUS_FAILED].v;
 }
 
-#define ADD_RAD_AVPAIR(_attr, _val, _len)                                 \
+#define ADD_RAD_AVPAIR(_rh, _attr, _val, _len)                            \
 	do {                                                                  \
-		if(!rc_avpair_add(rh, &send, rd_attrs[_attr].v, _val, _len, 0)) { \
+		if(!rc_avpair_add(_rh, &send, rd_attrs[_attr].v, _val, _len, 0)) { \
 			LM_ERR("failed to add %s, %d\n", rd_attrs[_attr].n, _attr);   \
 			goto error;                                                   \
 		}                                                                 \
@@ -336,6 +359,17 @@ int acc_radius_send_request(struct sip_msg *req, acc_info_t *inf)
 	int rc_result = -1;
 	double tsecmicro;
 	char smicrosec[18];
+	void *rh = rh_main;
+
+	// Maybe we should send request to backup server?
+	if (use_radius_backup_server && backup_server_active) {
+		int_str value;
+		search_first_avp(AVP_CLASS_GLOBAL | AVP_NAME_STR | AVP_VAL_STR, (int_str)m4_backup_radius_server_active_avp, &value, NULL);
+		if (value.s.len > 0 && value.s.s[0] == '1') {
+			LM_NOTICE("Sending acct request to backup radius server\n");
+			rh = rh_backup;
+		}
+	}
 
 	send = NULL;
 
@@ -344,16 +378,16 @@ int acc_radius_send_request(struct sip_msg *req, acc_info_t *inf)
 	attr_cnt -= 2;
 
 	av_type = rad_status(req, inf->env->code); /* RADIUS status */
-	ADD_RAD_AVPAIR(RA_ACCT_STATUS_TYPE, &av_type, -1);
+	ADD_RAD_AVPAIR(rh, RA_ACCT_STATUS_TYPE, &av_type, -1);
 
 	av_type = rd_vals[RV_SIP_SESSION].v; /* session*/
-	ADD_RAD_AVPAIR(RA_SERVICE_TYPE, &av_type, -1);
+	ADD_RAD_AVPAIR(rh, RA_SERVICE_TYPE, &av_type, -1);
 
 	av_type = (uint32_t)inf->env->code; /* status=integer */
-	ADD_RAD_AVPAIR(RA_SIP_RESPONSE_CODE, &av_type, -1);
+	ADD_RAD_AVPAIR(rh, RA_SIP_RESPONSE_CODE, &av_type, -1);
 
 	av_type = req->REQ_METHOD; /* method */
-	ADD_RAD_AVPAIR(RA_SIP_METHOD, &av_type, -1);
+	ADD_RAD_AVPAIR(rh, RA_SIP_METHOD, &av_type, -1);
 
 	// Event Time Stamp with Microseconds
 	if(rad_time_mode == 1) {
@@ -362,10 +396,10 @@ int acc_radius_send_request(struct sip_msg *req, acc_info_t *inf)
 					+ ((double)inf->env->tv.tv_usec / 1000000.0);
 		//radius client doesn t support double so convert it
 		snprintf(smicrosec, 18, "%17.6f", tsecmicro);
-		ADD_RAD_AVPAIR(RA_TIME_STAMP, &smicrosec, -1);
+		ADD_RAD_AVPAIR(rh, RA_TIME_STAMP, &smicrosec, -1);
 	} else {
 		av_type = (uint32_t)(uint64_t)inf->env->ts;
-		ADD_RAD_AVPAIR(RA_TIME_STAMP, &av_type, -1);
+		ADD_RAD_AVPAIR(rh, RA_TIME_STAMP, &av_type, -1);
 	}
 
 
@@ -382,10 +416,10 @@ int acc_radius_send_request(struct sip_msg *req, acc_info_t *inf)
 	for(i = 1; i < attr_cnt; i++) {
 		switch(inf->tarr[i]) {
 			case TYPE_STR:
-				ADD_RAD_AVPAIR(offset + i, inf->varr[i].s, inf->varr[i].len);
+				ADD_RAD_AVPAIR(rh, offset + i, inf->varr[i].s, inf->varr[i].len);
 				break;
 			case TYPE_INT:
-				ADD_RAD_AVPAIR(offset + i, &(inf->iarr[i]), -1);
+				ADD_RAD_AVPAIR(rh, offset + i, &(inf->iarr[i]), -1);
 				break;
 			default:
 				break;
@@ -399,7 +433,7 @@ int acc_radius_send_request(struct sip_msg *req, acc_info_t *inf)
 				inf->leg_info, req, inf->varr, inf->iarr, inf->tarr, 1);
 		do {
 			for(i = 0; i < attr_cnt; i++)
-				ADD_RAD_AVPAIR(offset + i, inf->varr[i].s, inf->varr[i].len);
+				ADD_RAD_AVPAIR(rh, offset + i, inf->varr[i].s, inf->varr[i].len);
 		} while((attr_cnt = accb.get_leg_attrs(inf->leg_info, req, inf->varr,
 						 inf->iarr, inf->tarr, 0))
 				!= 0);
