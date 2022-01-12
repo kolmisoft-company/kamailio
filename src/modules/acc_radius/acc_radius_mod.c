@@ -47,7 +47,7 @@
 #include "acc_radius_mod.h"
 #include "../../modules/acc/acc_extra.h"
 
-const str m4_backup_radius_server_active_avp = {"m4_backup_radius_server_active", 30};
+const str backup_radius_active_avp_name = {"backup_radius_active", 20};
 
 MODULE_VERSION
 
@@ -87,9 +87,6 @@ void *rh_backup = NULL;
 static char *rad_extra_str = 0;
 acc_extra_t *rad_extra = 0;
 /*@}*/
-
-/* backup server state */
-static int backup_server_active = 0;
 
 /* clang-format off */
 static cmd_export_t cmds[] = {
@@ -310,10 +307,8 @@ int acc_radius_init(acc_init_info_t *inf)
 			LM_ERR("failed to init backup acct radius server\n");
 		} else {
             LM_INFO("Backup acct radius server initialized!\n");
-			backup_server_active = 1;
 		}
 	} else {
-		backup_server_active = 1;
 		LM_INFO("Backup acct radius server is not set\n");
 	}
 
@@ -362,11 +357,12 @@ int acc_radius_send_request(struct sip_msg *req, acc_info_t *inf)
 	void *rh = rh_main;
 
 	// Maybe we should send request to backup server?
-	if (use_radius_backup_server && backup_server_active) {
-		int_str value;
-		search_first_avp(AVP_CLASS_GLOBAL | AVP_NAME_STR | AVP_VAL_STR, (int_str)m4_backup_radius_server_active_avp, &value, NULL);
-		if (value.s.len > 0 && value.s.s[0] == '1') {
-			LM_NOTICE("Sending acct request to backup radius server\n");
+	if (use_radius_backup_server) {
+		int_str backup_active;
+		search_first_avp(AVP_NAME_STR, (int_str)backup_radius_active_avp_name, &backup_active, NULL);
+		
+		if (backup_active.n == 1) {
+			LM_WARN("Sending acct request to backup radius server\n");
 			rh = rh_backup;
 		}
 	}
