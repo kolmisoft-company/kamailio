@@ -2742,12 +2742,18 @@ int reply_received(struct sip_msg *p_msg)
 							&& ((msg_status >= 180)
 									|| (last_uac_status
 											== 0))))) { /* provisional now */
+
+
+		if (t->fr_ignore_100 == 1 && msg_status == 100) {
+			LM_DBG("Ignoring FR/RETR timers update on provisional replies - reply is SIP 100 and fr_ignore_100 is enabled\n");
+		} else {
 #ifdef TIMER_DEBUG
-		LM_DBG("updating FR/RETR timers, \"fr_inv_timeout\": %d\n",
-				t->fr_inv_timeout);
+			LM_DBG("updating FR/RETR timers, \"fr_inv_timeout\": %d\n",
+					t->fr_inv_timeout);
 #endif
-		restart_rb_fr(&uac->request, t->fr_inv_timeout);
-		uac->request.flags |= F_RB_FR_INV; /* mark fr_inv */
+			restart_rb_fr(&uac->request, t->fr_inv_timeout);
+			uac->request.flags |= F_RB_FR_INV; /* mark fr_inv */
+		}
 	}									   /* provisional replies */
 
 done:

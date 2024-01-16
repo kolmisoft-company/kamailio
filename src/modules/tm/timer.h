@@ -114,6 +114,7 @@
 
 extern struct msgid_var user_fr_timeout;
 extern struct msgid_var user_fr_inv_timeout;
+extern struct msgid_var user_fr_ignore_100;
 extern struct msgid_var user_rt_t1_timeout_ms;
 extern struct msgid_var user_rt_t2_timeout_ms;
 extern struct msgid_var user_inv_max_lifetime;

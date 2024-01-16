@@ -178,6 +178,7 @@ static int w_t_on_branch_failure(struct sip_msg *msg, char *go_to, char *foo);
 static int w_t_on_branch(struct sip_msg *msg, char *go_to, char *foo);
 static int w_t_on_reply(struct sip_msg *msg, char *go_to, char *foo);
 static int t_check_status(struct sip_msg *msg, char *match, char *foo);
+static int w_t_set_ignore_100_fr(struct sip_msg *msg, char *fr_ignore_100, char *foo);
 static int t_set_fr_inv(struct sip_msg *msg, char *fr_inv, char *foo);
 static int t_set_fr_all(struct sip_msg *msg, char *fr_inv, char *fr);
 static int w_t_reset_fr(struct sip_msg *msg, char *foo, char *bar);
@@ -351,6 +352,8 @@ static cmd_export_t cmds[] = {
 				REQUEST_ROUTE | FAILURE_ROUTE},
 		{"t_write_unix", t_write_unix, 2, fixup_t_write, 0,
 				REQUEST_ROUTE | FAILURE_ROUTE},
+		{"t_set_ignore_100_fr", w_t_set_ignore_100_fr, 1, fixup_var_int_1, 0,
+				REQUEST_ROUTE },
 		{"t_set_fr", t_set_fr_inv, 1, fixup_var_int_1, 0,
 				REQUEST_ROUTE | TM_ONREPLY_ROUTE | FAILURE_ROUTE
 						| BRANCH_ROUTE},
@@ -2039,6 +2042,16 @@ static int t_set_fr_all(struct sip_msg *msg, char *p1, char *p2)
 	}
 
 	return t_set_fr(msg, fr_inv, fr);
+}
+
+static int w_t_set_ignore_100_fr(struct sip_msg *msg, char *fr_ignore_100_arg, char *foo)
+{
+	int fr_ignore_100;
+
+	if (get_int_fparam(&fr_ignore_100, msg, (fparam_t *)fr_ignore_100_arg) < 0)
+		return -1;
+
+	return t_set_ignore_100_fr(msg, fr_ignore_100);
 }
 
 static int t_set_fr_inv(struct sip_msg *msg, char *fr_inv, char *foo)

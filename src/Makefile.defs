@@ -712,7 +712,7 @@ else
 	EQUIV_OS = $(OS)
 endif
 
-C_DEFS= $(extra_defs) \
+C_DEFS=-DNO_DEBUG  $(extra_defs) \
 	 -DNAME='"$(MAIN_NAME)"' -DVERSION='"$(RELEASE)"' -DARCH='"$(ARCH)"' \
 	 -DOS='$(OS)_' -DOS_QUOTED='"$(OS)"' -DCOMPILER='"$(CC_VER)"'\
 	 -D__CPU_$(ARCH) $(os_defs) \

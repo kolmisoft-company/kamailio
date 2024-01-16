@@ -117,6 +117,7 @@
 
 struct msgid_var user_fr_timeout;
 struct msgid_var user_fr_inv_timeout;
+struct msgid_var user_fr_ignore_100;
 struct msgid_var user_rt_t1_timeout_ms;
 struct msgid_var user_rt_t2_timeout_ms;
 struct msgid_var user_inv_max_lifetime;

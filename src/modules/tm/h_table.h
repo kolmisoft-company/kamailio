@@ -427,6 +427,9 @@ typedef struct cell
 	retr_timeout_t rt_t2_timeout_ms; /* maximum retr. interval for retr_bufs */
 	ticks_t end_of_life;			 /* maximum lifetime */
 
+	/* final response ignore SIP 100 */
+	unsigned short fr_ignore_100;
+
 	/* nr of replied branch; 0..sr_dst_max_branches=branch value,
 	 * -1 no reply, -2 local reply */
 	short relayed_reply_branch;

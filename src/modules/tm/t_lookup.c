@@ -1777,6 +1777,8 @@ static inline void init_new_t(struct cell *new_cell, struct sip_msg *p_msg)
 			(ticks_t)get_msgid_val(user_fr_timeout, p_msg->id, int);
 	new_cell->fr_inv_timeout =
 			(ticks_t)get_msgid_val(user_fr_inv_timeout, p_msg->id, int);
+	new_cell->fr_ignore_100 =
+			get_msgid_val(user_fr_ignore_100, p_msg->id, int);
 	if(likely(new_cell->fr_timeout == 0)) {
 		if(unlikely(!fr_avp2timer(&timeout))) {
 			LM_DBG("init_new_t: FR__TIMER = %d s\n", timeout);
@@ -2327,6 +2329,27 @@ int t_lookup_callid(struct cell **trans, str callid, str cseq)
 	return -1;
 }
 
+/* params: fr_ignore_100, 0 - disabled, 1 - enabled"
+ * ret: 1 on success, -1 on error (script safe)*/
+int t_set_ignore_100_fr(struct sip_msg *msg, unsigned int fr_ignore_100)
+{
+	struct cell *t;
+	unsigned short fr_ignore_var;
+
+	if (fr_ignore_100 == 1) {
+		fr_ignore_var = 1;
+	} else {
+		fr_ignore_var = 0;
+	}
+
+	t = get_t();
+
+	if (!t || t == T_UNDEFINED) {
+		set_msgid_val(user_fr_ignore_100, msg->id, int, (int)fr_ignore_var);
+	}
+
+	return 1;
+}
 
 /* params: fr_inv & fr value in ms, 0 means "do not touch"
  * ret: 1 on success, -1 on error (script safe)*/

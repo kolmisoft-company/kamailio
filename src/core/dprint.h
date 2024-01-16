@@ -42,15 +42,15 @@
 /* C >= 99 has __func__, older gcc versions have __FUNCTION__ */
 #if __STDC_VERSION__ < 199901L
 #if __GNUC__ >= 2
-#define _FUNC_NAME_ __FUNCTION__
-#define _FUNC_SUFFIX_ "(): "
+#define _FUNC_NAME_ ""
+#define _FUNC_SUFFIX_ ""
 #else
 #define _FUNC_NAME_ ""
 #define _FUNC_SUFFIX_ ""
 #endif
 #else
 #define _FUNC_NAME_ __func__
-#define _FUNC_SUFFIX_ "(): "
+#define _FUNC_SUFFIX_ ""
 #endif
 
 #ifdef NO_DEBUG
