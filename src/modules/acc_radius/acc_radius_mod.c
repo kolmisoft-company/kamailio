@@ -100,13 +100,14 @@ static cmd_export_t cmds[] = {
 
 
 static param_export_t params[] = {
-	{"radius_config",        PARAM_STRING, &radius_config     },
-	{"radius_flag",          PARAM_INT, &radius_flag          },
-	{"radius_missed_flag",   PARAM_INT, &radius_missed_flag   },
-	{"service_type",         PARAM_INT, &service_type         },
-	{"radius_extra",         PARAM_STRING, &rad_extra_str     },
-	{"rad_time_mode",          PARAM_INT, &rad_time_mode      },
-	{"use_radius_backup_server",    INT_PARAM, &use_radius_backup_server   },
+	{"radius_config", PARAM_STRING, &radius_config},
+	{"radius_backup_config", PARAM_STRING, &radius_config_backup},
+	{"radius_flag", PARAM_INT, &radius_flag},
+	{"radius_missed_flag", PARAM_INT, &radius_missed_flag},
+	{"service_type", PARAM_INT, &service_type},
+	{"radius_extra", PARAM_STRING, &rad_extra_str},
+	{"rad_time_mode", PARAM_INT, &rad_time_mode},
+	{"use_radius_backup_server", PARAM_INT, &use_radius_backup_server},
 	{0,0,0}
 };
 
@@ -361,7 +362,7 @@ int acc_radius_send_request(struct sip_msg *req, acc_info_t *inf)
 	if (use_radius_backup_server) {
 		int_str backup_active;
 		search_first_avp(AVP_NAME_STR, (int_str)backup_radius_active_avp_name, &backup_active, NULL);
-		
+
 		if (backup_active.n == 1) {
 			LM_WARN("Sending acct request to backup radius server\n");
 			rh = rh_backup;
