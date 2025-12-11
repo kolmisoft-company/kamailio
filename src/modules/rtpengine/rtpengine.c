@@ -559,12 +559,6 @@ static param_export_t params[] = {
 	{"dtmf_event_timestamp", PARAM_STR, &dtmf_event_timestamp_pvar_str},
 	{"dtmf_event", PARAM_STR, &dtmf_event_pvar_str},
 
-	/* codecs */
-	{"legA_codec_tag", PARAM_STR, &side_A_codec_stats.tag_param },
-	{"legA_codec", PARAM_STR, &side_A_codec_stats.codec_param },
-	{"legB_codec_tag", PARAM_STR, &side_B_codec_stats.tag_param },
-	{"legB_codec", PARAM_STR, &side_B_codec_stats.codec_param },
-
 	/* designated side A */
 	{"mos_A_label_pv", PARAM_STR, &side_A_mos_stats.label_param},
 	{"mos_min_A_pv", PARAM_STR, &side_A_mos_stats.min.mos_param},
