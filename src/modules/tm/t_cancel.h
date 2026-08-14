@@ -62,6 +62,8 @@
 									F_CANCEL_B_FORCE_C, F_CANCEL_B_FAKE_REPLY
 									and F_CANCE_B_KILL take precedence */
 #define F_CANCEL_UNREF 16 /* unref the trans after canceling */
+#define F_CANCEL_LOCAL \
+	32 /* locally generated CANCEL (timeout/rpc), not e2e hop-by-hop */
 
 
 void prepare_to_cancel(struct cell *t, branch_bm_t *cancel_bm, branch_bm_t s);

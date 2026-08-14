@@ -29,11 +29,17 @@
 #include "t_funcs.h"
 #include "../../core/dprint.h"
 #include "../../core/ut.h"
+#include "../../core/action.h"
+#include "../../core/route.h"
+#include "../../core/kemi.h"
 #include "t_reply.h"
 #include "t_cancel.h"
 #include "t_msgbuilder.h"
 #include "t_lookup.h" /* for t_lookup_callid in fifo_uac_cancel */
 #include "t_hooks.h"
+#include "uac.h"
+
+extern str tm_event_callback;
 
 
 typedef struct cancel_reason_map
@@ -64,6 +70,74 @@ void cancel_reason_text(struct cancel_info *cancel_data)
 
 	return;
 }
+
+#ifdef WITH_EVENT_LOCAL_REQUEST
+/**
+ * Run event_route[tm:local-request] on a locally generated CANCEL and
+ * rebuild the shm buffer if the script added lumps (e.g. append_hf).
+ */
+static void run_local_cancel_event_route(struct cell *t, int branch,
+		struct retr_buf *crb)
+{
+	sip_msg_t lreq;
+	run_act_ctx_t ra_ctx;
+	int backup_rt;
+	struct cell *backup_t;
+	int backup_branch;
+	char *nbuf;
+	unsigned int nlen;
+	sr_kemi_eng_t *keng = NULL;
+	str evname = str_init("tm:local-request");
+
+	if(goto_on_local_req < 0 && tm_event_callback.len <= 0)
+		return;
+
+	if(build_sip_msg_from_buf(&lreq, crb->buffer, crb->buffer_len, 0) < 0) {
+		LM_ERR("failed to parse local CANCEL for tm:local-request\n");
+		return;
+	}
+
+	backup_rt = get_route_type();
+	backup_t = get_t();
+	backup_branch = get_t_branch();
+	set_route_type(LOCAL_ROUTE);
+	set_t(t, branch);
+	init_run_actions_ctx(&ra_ctx);
+
+	if(goto_on_local_req >= 0) {
+		LM_DBG("executing event_route[tm:local-request] for local CANCEL\n");
+		run_top_route(event_rt.rlist[goto_on_local_req], &lreq, &ra_ctx);
+	} else {
+		keng = sr_kemi_eng_get();
+		if(keng == NULL) {
+			LM_WARN("event callback (%s) set, but no cfg engine\n",
+					tm_event_callback.s);
+		} else if(sr_kemi_route(keng, &lreq, EVENT_ROUTE, &tm_event_callback,
+						  &evname)
+				  < 0) {
+			LM_ERR("error running event route kemi callback\n");
+		}
+	}
+
+	if(!(ra_ctx.run_flags & DROP_R_F)
+			&& (lreq.add_rm || lreq.body_lumps || lreq.new_uri.s)) {
+		nbuf = build_req_buf_from_sip_req(&lreq, &nlen, &crb->dst,
+				BUILD_NO_LOCAL_VIA | BUILD_NO_VIA1_UPDATE | BUILD_IN_SHM);
+		if(nbuf) {
+			shm_free(crb->buffer);
+			crb->buffer = nbuf;
+			crb->buffer_len = nlen;
+		} else {
+			LM_ERR("failed to rebuild local CANCEL after tm:local-request\n");
+		}
+	}
+
+	set_t(backup_t, backup_branch);
+	set_route_type(backup_rt);
+	lreq.buf = 0;
+	free_sip_msg(&lreq);
+}
+#endif /* WITH_EVENT_LOCAL_REQUEST */
 
 /** Prepare to cancel a transaction.
  * Determine which branches should be canceled and prepare them (internally
@@ -326,6 +400,10 @@ int cancel_branch(
 	crb->buffer_len = len;
 
 	LM_DBG("sending cancel...\n");
+#ifdef WITH_EVENT_LOCAL_REQUEST
+	if(flags & F_CANCEL_LOCAL)
+		run_local_cancel_event_route(t, branch, crb);
+#endif
 	if(SEND_BUFFER(crb) >= 0) {
 		if(unlikely(has_tran_tmcbs(t, TMCB_REQUEST_OUT)))
 			run_trans_callbacks_with_buf(
@@ -376,7 +454,7 @@ void rpc_cancel(rpc_t *rpc, void *c)
 	prepare_to_cancel(trans, &cancel_data.cancel_bitmap, 0);
 	/* tell tm to cancel the call */
 	DBG("Now calling cancel_uacs\n");
-	i = cancel_uacs(trans, &cancel_data, 0); /* don't fake 487s,
+	i = cancel_uacs(trans, &cancel_data, F_CANCEL_LOCAL); /* don't fake 487s,
 										 just wait for timeout */
 
 	/* t_lookup_callid REF`d the transaction for us, we must UNREF here! */
