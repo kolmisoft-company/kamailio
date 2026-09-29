@@ -95,9 +95,10 @@ static pv_export_t mod_pvs[] = {
 		{{0, 0}, 0, 0, 0, 0, 0, 0, 0}};
 
 static cmd_export_t cmds[] = {
-		{"sl_send_reply", w_sl_send_reply, 2, fixup_sl_reply, 0, REQUEST_ROUTE},
-		{"sl_reply", w_sl_send_reply, 2, fixup_sl_reply, 0, REQUEST_ROUTE},
-		{"send_reply", w_send_reply, 2, fixup_sl_reply, 0,
+		/* free_fixup allows PV args so Disconnect Codes can send a custom status-line phrase */
+		{"sl_send_reply", w_sl_send_reply, 2, fixup_sl_reply, fixup_free_fparam_all, REQUEST_ROUTE},
+		{"sl_reply", w_sl_send_reply, 2, fixup_sl_reply, fixup_free_fparam_all, REQUEST_ROUTE},
+		{"send_reply", w_send_reply, 2, fixup_sl_reply, fixup_free_fparam_all,
 				REQUEST_ROUTE | ONREPLY_ROUTE | FAILURE_ROUTE},
 		{"send_reply_mode", (cmd_function)w_send_reply_mode, 3,
 				fixup_sl_reply_mode, 0,
